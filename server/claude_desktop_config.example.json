@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "burp-mcp": {
+      "command": "python",
+      "args": ["F:\\ash\\burp-mcp\\server\\burp_mcp_server.py"],
+      "env": {
+        "BURP_BRIDGE_URL": "http://127.0.0.1:9876",
+        "BURP_BRIDGE_TOKEN": "changeme"
+      }
+    }
+  }
+}

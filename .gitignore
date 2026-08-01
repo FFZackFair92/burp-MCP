@@ -1,0 +1,16 @@
+# Java / Gradle
+extension/.gradle/
+extension/build/
+*.class
+
+# Python
+server/__pycache__/
+server/.venv/
+*.pyc
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
