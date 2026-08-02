@@ -106,10 +106,48 @@ Fase 4 (Community — controllo app):
   `BURP_SEND_MIN_INTERVAL` (secondi tra invii).
 - Endpoint del ponte: `/ping`, `/scope/*`, `/proxy/history`, `/sitemap`, `/message`,
   `/http/send`, `/repeater/send`, `/intruder/send`, `/proxy/intercept*`, `/comparer/send`,
-  `/organizer/*`, `/sitemap/add`, `/sitemap/issues`, `/ws/*`, `/project`, `/storage/*`.
+  `/organizer/*`, `/sitemap/add`, `/sitemap/issues`, `/ws/*`, `/project`, `/storage/*`,
+  `/collaborator/*`, `/dashboard/event`, `/extension/*`.
+
+Fase 5 (Community — Collaborator, Dashboard, Extensions):
+- `collaborator_generate(count, custom_data)` — genera N payload OOB (canary DNS/HTTP/SMTP);
+  usa il server Collaborator pubblico, funziona anche in Community.
+- `collaborator_interactions(interaction_id, limit)` — legge le interazioni ricevute
+  (poll manuale: nessun push, va richiamato dopo aver piazzato il payload nel target).
+- `collaborator_status()` / `collaborator_reset()` — stato del client / lo scarta.
+  La secret key persiste nello storage di progetto: un reload dell'estensione nello
+  stesso progetto Burp ripristina lo stesso client (i payload restano interrogabili).
+- `dashboard_event(message, level=info|debug|error|critical)` — scrive nell'Event log
+  della tab **Dashboard**.
+- `extension_log(message, stream=output|error)` — scrive nella tab Output/Errors della
+  nostra riga in **Extensions → Installed**.
+- `extension_info()` — filename del jar e flag `is_bapp` della nostra estensione.
 
 Test locali: `python test_bridge.py`, `python test_fase2.py`, `python test_fase3.py`,
-`python test_fase4.py`.
+`python test_fase4.py`, `python test_fase5.py`.
+
+## Copertura tab di Burp (screenshot barra strumenti)
+
+| Tab            | Copertura | Tool / route |
+|----------------|-----------|--------------|
+| Dashboard      | Parziale  | `dashboard_event` scrive nell'Event log; niente scanner (richiede Pro) |
+| Target         | Sì        | `sitemap*`, `scope_*` |
+| Proxy          | Sì        | `proxy_history`, `proxy_intercept`, `get_message`, `websocket_history` |
+| Intruder       | Invio     | `send_to_intruder` (avvio/config attacco resta manuale, no API Montoya) |
+| Repeater       | Sì        | `send_to_repeater` |
+| Collaborator   | Sì        | `collaborator_generate/interactions/status/reset` |
+| Sequencer      | No        | Nessuna API Montoya pubblica per pilotare l'analisi di entropia |
+| Decoder        | Sì (equivalente) | `encode`/`decode`/`hash_text` (pure Python, stesso risultato del tool UI) |
+| Comparer       | Sì        | `comparer_send`, `compare_responses` |
+| Logger         | No        | Montoya non espone lo storico della tab Logger (solo Proxy/WS history) |
+| Organizer      | Sì        | `organizer_send`, `organizer_list` |
+| Extensions     | Parziale  | `extension_log`/`extension_info` solo per la nostra riga; Montoya non permette di enumerare/pilotare altre estensioni o il BApp Store |
+| Discover       | No        | Feature AI nativa di Burp, nessuna API |
+
+Le voci "No" sono state verificate leggendo il constant-pool delle classi in
+`extension/lib/montoya-api-2026.4.jar` (nessuna classe `sequencer`/`discover`,
+nessun metodo per enumerare estensioni): non sono limitazioni di Community,
+mancano proprio nell'API pubblica anche in Pro.
 
 ## Roadmap
 
@@ -117,4 +155,5 @@ Test locali: `python test_bridge.py`, `python test_fase2.py`, `python test_fase3
 - [x] Fase 2 — scope, `proxy_history`, `sitemap`, `get_message`, `http_send` (scope-guard)
 - [x] Fase 3 — `send_to_repeater`, `send_to_intruder`, `compare_responses`, utilities (encode/decode/hash)
 - [x] Fase 4 (Community) — intercept, Comparer, Organizer, sitemap add/issues, WebSocket, project, storage
-- [ ] Fase 5 (solo Pro) — scanner attivo/passivo, Collaborator (OOB)
+- [x] Fase 5 (Community) — Collaborator, Dashboard event log, Extensions output/info
+- [ ] Fase 6 (solo Pro) — scanner attivo/passivo (audit issue reali)

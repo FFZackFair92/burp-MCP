@@ -30,6 +30,7 @@ def make_handler(token: str):
     state = {"intercept": False}
     storage = {"project": {}, "global": {}}
     organizer = []  # [{"id","status"}]
+    collab = {"active": False, "server": "polling.burpcollaborator.net", "next_id": 1, "interactions": []}
     ws_msgs = [
         {"index": 0, "ws_id": 1, "direction": "CLIENT_TO_SERVER", "listener_port": 8080,
          "url": "http://example.com/ws", "host": "example.com", "payload": "hello"},
@@ -135,6 +136,22 @@ def make_handler(token: str):
                 d = storage.get(scope, {})
                 return self._send(200, {"scope": scope, "count": len(d),
                                         "keys": list(d.keys())})
+
+            # ---- Fase 5 ----
+            if path == "/collaborator/status":
+                return self._send(200, {"active": collab["active"],
+                                        "server": collab["server"] if collab["active"] else None})
+            if path == "/collaborator/interactions":
+                items = collab["interactions"]
+                idf = q.get("interaction_id", "")
+                if idf:
+                    items = [i for i in items if i["interaction_id"] == idf]
+                limit = int(q.get("limit", "100"))
+                return self._send(200, {"count": min(len(items), limit),
+                                        "total": len(collab["interactions"]),
+                                        "items": items[:limit]})
+            if path == "/extension/info":
+                return self._send(200, {"filename": "burp-mcp-bridge-0.1.0.jar", "is_bapp": False})
             return self._send(404, {"error": "not found"})
 
         # ---- POST ----
@@ -218,6 +235,31 @@ def make_handler(token: str):
                 key = q.get("key", "")
                 storage.get(scope, {}).pop(key, None)
                 return self._send(200, {"scope": scope, "key": key, "deleted": True})
+
+            # ---- Fase 5 ----
+            if path == "/collaborator/generate":
+                count = int(q.get("count", "1"))
+                collab["active"] = True
+                items = []
+                for _ in range(count):
+                    iid = f"int-{collab['next_id']}"
+                    collab["next_id"] += 1
+                    items.append({"payload": f"{iid}.{collab['server']}", "interaction_id": iid})
+                    # simula un hit DNS immediato, cosi' i test possono esercitare il poll
+                    collab["interactions"].append({
+                        "interaction_id": iid, "type": "DNS",
+                        "time": "2026-08-02T00:00:00Z[UTC]",
+                        "client_ip": "203.0.113.5", "client_port": 53212,
+                        "detail": "dns_query_type=A",
+                    })
+                return self._send(200, {"count": count, "server": collab["server"], "items": items})
+            if path == "/collaborator/reset":
+                collab.update(active=False, next_id=1, interactions=[])
+                return self._send(200, {"reset": True})
+            if path == "/dashboard/event":
+                return self._send(200, {"logged": True, "level": q.get("level", "info")})
+            if path == "/extension/log":
+                return self._send(200, {"logged": True, "stream": q.get("stream", "output")})
 
             return self._send(404, {"error": "not found"})
 

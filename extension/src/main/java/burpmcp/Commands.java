@@ -1,7 +1,13 @@
 package burpmcp;
 
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.collaborator.CollaboratorClient;
+import burp.api.montoya.collaborator.CollaboratorPayload;
+import burp.api.montoya.collaborator.Interaction;
+import burp.api.montoya.collaborator.InteractionFilter;
+import burp.api.montoya.collaborator.SecretKey;
 import burp.api.montoya.core.ByteArray;
+import burp.api.montoya.extension.Extension;
 import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
@@ -17,6 +23,7 @@ import burpmcp.BridgeServer.Response;
 
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
 /**
@@ -473,6 +480,141 @@ final class Commands {
             else api.persistence().extensionData().deleteString(key);
             return new Response(200, "{\"scope\":" + BridgeServer.jsonStr(scope)
                     + ",\"key\":" + BridgeServer.jsonStr(key) + ",\"deleted\":true}");
+        });
+
+        // ================= FASE 5 (Collaborator, Dashboard, Extensions info) ================= //
+        // Copre le tab dello screenshot senza equivalente diretto in Fase 2-4:
+        // Collaborator (API pubblica, funziona anche in Community col server pubblico),
+        // Dashboard (Event log via Logging.raiseXxxEvent) ed Extensions (Output/Errors della
+        // nostra riga + metadati). Sequencer/Discover/gestione altre estensioni NON hanno
+        // API Montoya pubblica: nessuna route e' aggiunta per queste, vedi README.
+
+        // Client Collaborator tenuto in memoria per la durata del caricamento estensione;
+        // la secret key viene salvata nello storage di progetto cosi' un ricaricamento
+        // dell'estensione (stesso progetto Burp) puo' ripristinare lo stesso client.
+        AtomicReference<CollaboratorClient> collabRef = new AtomicReference<>();
+        String savedKey = api.persistence().extensionData().getString("collaborator_secret_key");
+        if (savedKey != null) {
+            try {
+                collabRef.set(api.collaborator().restoreClient(SecretKey.secretKey(savedKey)));
+            } catch (RuntimeException e) {
+                api.logging().logToError("collaborator: impossibile ripristinare la secret key salvata: " + e);
+            }
+        }
+
+        server.route("GET", "/collaborator/status", req -> {
+            CollaboratorClient client = collabRef.get();
+            boolean active = client != null;
+            String addr = active ? client.server().address() : null;
+            return new Response(200, "{\"active\":" + active
+                    + ",\"server\":" + BridgeServer.jsonStr(addr) + "}");
+        });
+
+        server.route("POST", "/collaborator/generate", req -> {
+            int count = clampInt(req.q("count", "1"), 1, 50, 1);
+            String customData = req.q("custom_data", "");
+
+            CollaboratorClient client = collabRef.get();
+            if (client == null) {
+                client = api.collaborator().createClient();
+                collabRef.set(client);
+                api.persistence().extensionData().setString("collaborator_secret_key", client.getSecretKey().toString());
+            }
+
+            StringBuilder arr = new StringBuilder("[");
+            for (int i = 0; i < count; i++) {
+                CollaboratorPayload p = customData.isEmpty() ? client.generatePayload() : client.generatePayload(customData);
+                if (i > 0) arr.append(',');
+                arr.append("{\"payload\":").append(BridgeServer.jsonStr(p.toString()))
+                        .append(",\"interaction_id\":").append(BridgeServer.jsonStr(p.id().toString()))
+                        .append("}");
+            }
+            arr.append("]");
+            return new Response(200, "{\"count\":" + count
+                    + ",\"server\":" + BridgeServer.jsonStr(client.server().address())
+                    + ",\"items\":" + arr + "}");
+        });
+
+        server.route("GET", "/collaborator/interactions", req -> {
+            CollaboratorClient client = collabRef.get();
+            if (client == null) return new Response(200, "{\"count\":0,\"total\":0,\"items\":[]}");
+            int limit = clampInt(req.q("limit", "100"), 1, 1000, 100);
+            String idFilter = req.q("interaction_id", "");
+
+            List<Interaction> ints = idFilter.isEmpty()
+                    ? client.getAllInteractions()
+                    : client.getInteractions(InteractionFilter.interactionIdFilter(idFilter));
+
+            StringBuilder arr = new StringBuilder("[");
+            int emitted = 0;
+            for (Interaction it : ints) {
+                if (emitted >= limit) break;
+                if (emitted > 0) arr.append(',');
+                String detail = "";
+                if (it.dnsDetails().isPresent()) {
+                    detail = "dns_query_type=" + it.dnsDetails().get().queryType();
+                } else if (it.httpDetails().isPresent()) {
+                    HttpRequestResponse rr = it.httpDetails().get().requestResponse();
+                    detail = (rr != null && rr.request() != null) ? rr.request().url() : "";
+                } else if (it.smtpDetails().isPresent()) {
+                    detail = "smtp_protocol=" + it.smtpDetails().get().protocol();
+                }
+                arr.append("{")
+                        .append("\"interaction_id\":").append(BridgeServer.jsonStr(it.id().toString())).append(',')
+                        .append("\"type\":").append(BridgeServer.jsonStr(String.valueOf(it.type()))).append(',')
+                        .append("\"time\":").append(BridgeServer.jsonStr(String.valueOf(it.timeStamp()))).append(',')
+                        .append("\"client_ip\":").append(BridgeServer.jsonStr(String.valueOf(it.clientIp()))).append(',')
+                        .append("\"client_port\":").append(it.clientPort()).append(',')
+                        .append("\"detail\":").append(BridgeServer.jsonStr(detail))
+                        .append("}");
+                emitted++;
+            }
+            arr.append("]");
+            return new Response(200, "{\"count\":" + emitted + ",\"total\":" + ints.size() + ",\"items\":" + arr + "}");
+        });
+
+        server.route("POST", "/collaborator/reset", req -> {
+            collabRef.set(null);
+            api.persistence().extensionData().deleteString("collaborator_secret_key");
+            return new Response(200, "{\"reset\":true}");
+        });
+
+        // ---------- DASHBOARD (Event log) ----------
+        server.route("POST", "/dashboard/event", req -> {
+            String level = req.q("level", "info").toLowerCase();
+            String msg = req.body != null ? req.body : "";
+            if (msg.isEmpty()) return bad("corpo (messaggio) mancante");
+            switch (level) {
+                case "debug":
+                    api.logging().raiseDebugEvent(msg);
+                    break;
+                case "error":
+                    api.logging().raiseErrorEvent(msg);
+                    break;
+                case "critical":
+                    api.logging().raiseCriticalEvent(msg);
+                    break;
+                default:
+                    level = "info";
+                    api.logging().raiseInfoEvent(msg);
+            }
+            return new Response(200, "{\"logged\":true,\"level\":" + BridgeServer.jsonStr(level) + "}");
+        });
+
+        // ---------- EXTENSIONS (output/errori ed info della nostra riga) ----------
+        server.route("POST", "/extension/log", req -> {
+            boolean isError = req.q("stream", "output").equalsIgnoreCase("error");
+            String msg = req.body != null ? req.body : "";
+            if (msg.isEmpty()) return bad("corpo (messaggio) mancante");
+            if (isError) api.logging().logToError(msg);
+            else api.logging().logToOutput(msg);
+            return new Response(200, "{\"logged\":true,\"stream\":" + BridgeServer.jsonStr(isError ? "error" : "output") + "}");
+        });
+
+        server.route("GET", "/extension/info", req -> {
+            Extension ext = api.extension();
+            return new Response(200, "{\"filename\":" + BridgeServer.jsonStr(ext.filename())
+                    + ",\"is_bapp\":" + ext.isBapp() + "}");
         });
     }
 

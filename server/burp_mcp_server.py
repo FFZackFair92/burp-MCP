@@ -596,5 +596,79 @@ def config_keys(scope: str = "project") -> dict:
     return _api("GET", "/storage/keys", {"scope": scope})
 
 
+# --------------------------------------------------------------------------- #
+#  Fase 5 — Collaborator, Dashboard (event log), Extensions (output/info)
+#
+#  Copertura per tab: Sequencer, Discover e la gestione di altre estensioni
+#  (Extensions > Installed/BApp Store) NON hanno API pubblica in Montoya,
+#  quindi non esistono tool corrispondenti (vedi README per il dettaglio).
+# --------------------------------------------------------------------------- #
+@mcp.tool
+def collaborator_status() -> dict:
+    """Stato del client Collaborator (attivo/inattivo + indirizzo server).
+
+    Funziona anche in Burp Community: usa il server Collaborator pubblico
+    a meno che Burp non sia configurato diversamente."""
+    return _api("GET", "/collaborator/status")
+
+
+@mcp.tool
+def collaborator_generate(count: int = 1, custom_data: str | None = None) -> dict:
+    """Genera uno o piu' payload Collaborator (hostname univoci da usare come canary
+    in richieste/header/body per rilevare SSRF, blind injection, ecc.).
+
+    Il client viene creato al primo utilizzo e la sua secret key persiste nello
+    storage di progetto: se l'estensione viene ricaricata nello stesso progetto
+    Burp, i payload gia' generati restano interrogabili con collaborator_interactions.
+    """
+    return _api("POST", "/collaborator/generate", {
+        "count": str(count), "custom_data": custom_data,
+    })
+
+
+@mcp.tool
+def collaborator_interactions(interaction_id: str | None = None, limit: int = 100) -> dict:
+    """Elenca le interazioni ricevute dal Collaborator (DNS/HTTP/SMTP).
+
+    interaction_id: se dato, filtra solo le interazioni di quel payload
+    (l'id ritornato da collaborator_generate)."""
+    return _api("GET", "/collaborator/interactions", {
+        "interaction_id": interaction_id, "limit": str(limit),
+    })
+
+
+@mcp.tool
+def collaborator_reset() -> dict:
+    """Scarta il client Collaborator corrente (e la secret key salvata).
+
+    La prossima collaborator_generate ne crea uno nuovo da zero."""
+    return _api("POST", "/collaborator/reset")
+
+
+@mcp.tool
+def dashboard_event(message: str, level: str = "info") -> dict:
+    """Registra un evento nell'Event log della Dashboard di Burp.
+
+    level: 'info' (default) | 'debug' | 'error' | 'critical'."""
+    return _api("POST", "/dashboard/event", {"level": level}, body=message)
+
+
+@mcp.tool
+def extension_log(message: str, stream: str = "output") -> dict:
+    """Scrive nella tab Output/Errors della nostra estensione
+    (Extensions > Installed > burp-mcp-bridge).
+
+    stream: 'output' (default) | 'error'."""
+    return _api("POST", "/extension/log", {"stream": stream}, body=message)
+
+
+@mcp.tool
+def extension_info() -> dict:
+    """Metadati della nostra estensione cosi' come registrata in Extensions > Installed
+    (nome file .jar, se e' un BApp). Montoya non espone un'API per enumerare o
+    pilotare le ALTRE estensioni installate: per quello serve la UI."""
+    return _api("GET", "/extension/info")
+
+
 if __name__ == "__main__":
     mcp.run()
