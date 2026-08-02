@@ -1,23 +1,44 @@
 """
 Mock del ponte HTTP di Burp, per test locali senza avviare Burp.
 
-Riproduce ESATTAMENTE il contratto di BridgeServer.java:
+Riproduce il contratto di BridgeServer.java + Commands.java (Fase 2):
   - richiede l'header  X-Burp-Token: <token>  (altrimenti 401)
-  - GET /ping -> 200 {"status":"ok","product":...,"version":...,"edition":...}
+  - GET  /ping
+  - GET  /scope/check?url=       -> {"url","in_scope"}   (in scope se host termina in example.com)
+  - POST /scope/add|remove?url=
+  - GET  /proxy/history          -> {"items":[...],"count","total_matched","offset"}
+  - GET  /sitemap                -> come sopra
+  - GET  /message?source&index   -> {"request","response",...}
+  - POST /http/send?host&port&secure&force  (body = raw request)
+                                 -> 403 out_of_scope se host non in scope e force!=true
 
-Uso standalone:
-  python mock_burp.py            # porta 9876, token "changeme"
-  python mock_burp.py 9999 segreto
+Uso standalone:  python mock_burp.py [porta] [token]
 """
 
 import json
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit, parse_qs
+
+
+def _in_scope(host: str) -> bool:
+    return bool(host) and host.lower().endswith("example.com")
 
 
 def make_handler(token: str):
+    # stato in-memory condiviso tra le richieste (per i test Fase 4)
+    state = {"intercept": False}
+    storage = {"project": {}, "global": {}}
+    organizer = []  # [{"id","status"}]
+    ws_msgs = [
+        {"index": 0, "ws_id": 1, "direction": "CLIENT_TO_SERVER", "listener_port": 8080,
+         "url": "http://example.com/ws", "host": "example.com", "payload": "hello"},
+        {"index": 1, "ws_id": 1, "direction": "SERVER_TO_CLIENT", "listener_port": 8080,
+         "url": "http://example.com/ws", "host": "example.com", "payload": "world"},
+    ]
+
     class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *args):  # silenzia il logging su stderr
+        def log_message(self, *args):
             pass
 
         def _send(self, code: int, payload: dict):
@@ -28,26 +49,183 @@ def make_handler(token: str):
             self.end_headers()
             self.wfile.write(body)
 
+        def _auth_ok(self) -> bool:
+            return self.headers.get("X-Burp-Token") == token
+
+        def _query(self):
+            return {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
+
+        def _path(self):
+            return urlsplit(self.path).path
+
+        def _read_body(self) -> str:
+            n = int(self.headers.get("Content-Length", "0") or "0")
+            return self.rfile.read(n).decode("utf-8", "replace") if n else ""
+
+        # ---- GET ----
         def do_GET(self):
-            if self.headers.get("X-Burp-Token") != token:
-                self._send(401, {"error": "unauthorized"})
-                return
-            if self.path == "/ping":
-                self._send(200, {
-                    "status": "ok",
-                    "product": "Burp Suite Community Edition",
-                    "version": "2026.4.0",
-                    "edition": "COMMUNITY_EDITION",
+            if not self._auth_ok():
+                return self._send(401, {"error": "unauthorized"})
+            path, q = self._path(), self._query()
+
+            if path == "/ping":
+                return self._send(200, {
+                    "status": "ok", "product": "Burp Suite Community Edition",
+                    "version": "2026.4.0", "edition": "COMMUNITY_EDITION",
                 })
-            else:
-                self._send(404, {"error": "not found"})
+            if path == "/scope/check":
+                url = q.get("url", "")
+                return self._send(200, {"url": url, "in_scope": _in_scope(urlsplit(url).hostname or "")})
+            if path in ("/proxy/history", "/sitemap"):
+                items = [
+                    {"index": 0, "method": "GET", "url": "http://example.com/",
+                     "host": "example.com", "status": 200, "length": 120, "mime": "HTML"},
+                    {"index": 1, "method": "POST", "url": "http://example.com/login",
+                     "host": "example.com", "status": 302, "length": 0, "mime": "NONE"},
+                ]
+                host = q.get("host", "").lower()
+                if host:
+                    items = [it for it in items if host in it["host"].lower()]
+                return self._send(200, {"total_matched": len(items), "count": len(items),
+                                        "offset": int(q.get("offset", "0")), "items": items})
+            if path == "/message":
+                idx = int(q.get("index", "0"))
+                return self._send(200, {
+                    "source": q.get("source", "proxy"), "index": idx,
+                    "truncated": False,
+                    "request": f"GET /item/{idx} HTTP/1.1\r\nHost: example.com\r\n\r\n",
+                    "response": f"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nok-{idx}",
+                })
+
+            # ---- Fase 4 ----
+            if path == "/proxy/intercept":
+                return self._send(200, {"intercept_enabled": state["intercept"]})
+            if path == "/organizer/list":
+                return self._send(200, {"count": len(organizer), "items": organizer})
+            if path == "/sitemap/issues":
+                return self._send(200, {"total": 0, "count": 0,
+                                        "offset": int(q.get("offset", "0")), "items": []})
+            if path == "/ws/history":
+                items = [{k: m[k] for k in ("index", "ws_id", "direction",
+                                            "listener_port", "url", "host")}
+                         | {"length": len(m["payload"])} for m in ws_msgs]
+                host = q.get("host", "").lower()
+                if host:
+                    items = [it for it in items if host in it["host"].lower()]
+                return self._send(200, {"total_matched": len(items), "count": len(items),
+                                        "offset": int(q.get("offset", "0")), "items": items})
+            if path == "/ws/message":
+                idx = int(q.get("index", "0"))
+                if idx >= len(ws_msgs):
+                    return self._send(404, {"error": "index fuori range (ws)"})
+                m = ws_msgs[idx]
+                return self._send(200, {"index": idx, "ws_id": m["ws_id"],
+                                        "direction": m["direction"], "truncated": False,
+                                        "payload": m["payload"]})
+            if path == "/project":
+                return self._send(200, {"name": "Temporary project", "id": "temp-1"})
+            if path == "/storage/get":
+                scope = q.get("scope", "project")
+                key = q.get("key", "")
+                d = storage.get(scope, {})
+                return self._send(200, {"scope": scope, "key": key,
+                                        "exists": key in d, "value": d.get(key)})
+            if path == "/storage/keys":
+                scope = q.get("scope", "project")
+                d = storage.get(scope, {})
+                return self._send(200, {"scope": scope, "count": len(d),
+                                        "keys": list(d.keys())})
+            return self._send(404, {"error": "not found"})
+
+        # ---- POST ----
+        def do_POST(self):
+            if not self._auth_ok():
+                return self._send(401, {"error": "unauthorized"})
+            path, q = self._path(), self._query()
+            body = self._read_body()
+
+            if path in ("/scope/add", "/scope/remove"):
+                key = "added" if path.endswith("add") else "removed"
+                return self._send(200, {key: q.get("url", "")})
+
+            if path == "/http/send":
+                host = q.get("host", "")
+                port = q.get("port", "0")
+                secure = q.get("secure", "false") == "true"
+                force = q.get("force", "false") == "true"
+                default_port = "443" if secure else "80"
+                netloc = host if port == default_port else f"{host}:{port}"
+                # path dalla request-line della raw
+                first = body.split("\r\n", 1)[0]
+                req_path = first.split(" ")[1] if len(first.split(" ")) >= 2 else "/"
+                url = f"{'https' if secure else 'http'}://{netloc}{req_path}"
+                if not force and not _in_scope(host):
+                    return self._send(403, {"error": "out_of_scope", "url": url,
+                                            "hint": "usa force=true per inviare comunque"})
+                return self._send(200, {
+                    "url": url, "status": 200, "length": len(body), "mime": "HTML",
+                    "time_ms": 1, "truncated": False,
+                    "response": "HTTP/1.1 200 OK\r\n\r\n[echo]\r\n" + body,
+                })
+
+            if path in ("/repeater/send", "/intruder/send"):
+                host = q.get("host", "")
+                port = q.get("port", "0")
+                secure = q.get("secure", "false") == "true"
+                force = q.get("force", "false") == "true"
+                default_port = "443" if secure else "80"
+                netloc = host if port == default_port else f"{host}:{port}"
+                first = body.split("\r\n", 1)[0]
+                req_path = first.split(" ")[1] if len(first.split(" ")) >= 2 else "/"
+                url = f"{'https' if secure else 'http'}://{netloc}{req_path}"
+                if not force and not _in_scope(host):
+                    return self._send(403, {"error": "out_of_scope", "url": url})
+                target = "repeater" if path.endswith("repeater/send") else "intruder"
+                return self._send(200, {"sent": True, "target": target, "url": url})
+
+            # ---- Fase 4 ----
+            if path == "/proxy/intercept/enable":
+                state["intercept"] = True
+                return self._send(200, {"intercept_enabled": True})
+            if path == "/proxy/intercept/disable":
+                state["intercept"] = False
+                return self._send(200, {"intercept_enabled": False})
+            if path == "/comparer/send":
+                return self._send(200, {"sent": True, "target": "comparer", "length": len(body)})
+            if path == "/organizer/send":
+                host = q.get("host", "")
+                port = q.get("port", "0")
+                secure = q.get("secure", "false") == "true"
+                default_port = "443" if secure else "80"
+                netloc = host if port == default_port else f"{host}:{port}"
+                first = body.split("\r\n", 1)[0]
+                req_path = first.split(" ")[1] if len(first.split(" ")) >= 2 else "/"
+                url = f"{'https' if secure else 'http'}://{netloc}{req_path}"
+                organizer.append({"id": len(organizer) + 1, "status": "NEW"})
+                return self._send(200, {"sent": True, "target": "organizer", "url": url})
+            if path == "/sitemap/add":
+                idx = int(q.get("index", "0"))
+                return self._send(200, {"added": True,
+                                        "url": f"http://example.com/item/{idx}"})
+            if path == "/storage/set":
+                scope = q.get("scope", "project")
+                key = q.get("key", "")
+                storage.setdefault(scope, {})[key] = body
+                return self._send(200, {"scope": scope, "key": key,
+                                        "saved": True, "length": len(body)})
+            if path == "/storage/delete":
+                scope = q.get("scope", "project")
+                key = q.get("key", "")
+                storage.get(scope, {}).pop(key, None)
+                return self._send(200, {"scope": scope, "key": key, "deleted": True})
+
+            return self._send(404, {"error": "not found"})
 
     return Handler
 
 
 def serve(port: int = 9876, token: str = "changeme") -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(token))
-    return httpd
+    return ThreadingHTTPServer(("127.0.0.1", port), make_handler(token))
 
 
 if __name__ == "__main__":

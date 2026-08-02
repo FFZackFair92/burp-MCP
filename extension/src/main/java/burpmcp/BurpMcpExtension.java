@@ -24,10 +24,11 @@ public class BurpMcpExtension implements BurpExtension {
 
         try {
             server = new BridgeServer(api, port, token);
+            Commands.register(server, api);   // Fase 2: scope, proxy history, sitemap, message, http send
             server.start();
             api.logging().logToOutput("[Burp MCP Bridge] In ascolto su http://127.0.0.1:" + port);
             api.logging().logToOutput("[Burp MCP Bridge] Token (X-Burp-Token): " + token);
-            api.logging().logToOutput("[Burp MCP Bridge] Endpoint attivi: GET /ping");
+            api.logging().logToOutput("[Burp MCP Bridge] Endpoint: /ping /scope/* /proxy/history /sitemap /message /http/send");
         } catch (Exception e) {
             api.logging().logToError("[Burp MCP Bridge] Avvio fallito: " + e.getMessage());
         }

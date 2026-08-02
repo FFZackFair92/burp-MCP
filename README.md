@@ -27,10 +27,14 @@ Senza token valido → `401`.
 
 ## 1) Estensione Burp (il ponte)
 
-Serve un JDK (17+). Da `extension/`:
+Serve **solo un JDK 17+** nel PATH (verifica con `javac -version`). Da `extension/`:
 
+```bat
+build.bat            :: Windows  (senza Gradle: scarica Montoya, compila, crea il jar)
+```
 ```bash
-gradle jar          # oppure: ./gradlew jar  se generi il wrapper
+./build.sh           # Linux/macOS
+# in alternativa, se hai Gradle:  gradle jar
 ```
 
 Produce `extension/build/libs/burp-mcp-bridge-0.1.0.jar`.
@@ -80,7 +84,37 @@ il protocollo MCP e la gestione degli errori senza avviare Burp.
 Il ponte ascolta **solo su 127.0.0.1** ed è protetto da token. Cambia il token
 di default (`changeme`) prima di un uso reale.
 
+## Comandi (tool MCP)
+
+Fase 1: `burp_status`.
+Fase 2 (Community): `scope_check` / `scope_add` / `scope_remove`, `proxy_history`,
+`sitemap`, `get_message`, `http_send`.
+Fase 3: `send_to_repeater`, `send_to_intruder`, `compare_responses`,
+`encode` / `decode` / `hash_text` (utilities pure Python).
+Fase 4 (Community — controllo app):
+- `proxy_intercept(action=status|enable|disable)` — accende/spegne l'intercept del Proxy.
+- `comparer_send(items | source+indices)` — manda blob al Comparer (si accumulano).
+- `organizer_send(...)` + `organizer_list()` — archivia richieste nell'Organizer (no scope-guard).
+- `sitemap_add(index, source)` — aggiunge alla Site map una voce di proxy/sitemap.
+- `sitemap_issues()` — elenca gli audit issue presenti (in Community di norma vuoto).
+- `websocket_history()` + `get_ws_message(index)` — storico e payload dei messaggi WebSocket.
+- `project_info()` — nome/id del progetto corrente.
+- `config_get/set/delete/keys(scope=project|global)` — scratchpad persistente (chiave/valore string).
+
+- `http_send`, `send_to_repeater`, `send_to_intruder` hanno **scope-guard**: rifiutano
+  URL fuori dallo scope di Burp salvo `force=true`. Rate-limit su `http_send` via
+  `BURP_SEND_MIN_INTERVAL` (secondi tra invii).
+- Endpoint del ponte: `/ping`, `/scope/*`, `/proxy/history`, `/sitemap`, `/message`,
+  `/http/send`, `/repeater/send`, `/intruder/send`, `/proxy/intercept*`, `/comparer/send`,
+  `/organizer/*`, `/sitemap/add`, `/sitemap/issues`, `/ws/*`, `/project`, `/storage/*`.
+
+Test locali: `python test_bridge.py`, `python test_fase2.py`, `python test_fase3.py`,
+`python test_fase4.py`.
+
 ## Roadmap
 
-- [x] Fase 1 — ponte + `burp_status()` (health check)
-- [ ] Fase 2 — comandi: `proxy_history`, `sitemap`, `send_to_repeater`, `active/passive` (Pro), …
+- [x] Fase 1 — ponte + `burp_status()`
+- [x] Fase 2 — scope, `proxy_history`, `sitemap`, `get_message`, `http_send` (scope-guard)
+- [x] Fase 3 — `send_to_repeater`, `send_to_intruder`, `compare_responses`, utilities (encode/decode/hash)
+- [x] Fase 4 (Community) — intercept, Comparer, Organizer, sitemap add/issues, WebSocket, project, storage
+- [ ] Fase 5 (solo Pro) — scanner attivo/passivo, Collaborator (OOB)

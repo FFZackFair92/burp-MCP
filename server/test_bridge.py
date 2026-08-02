@@ -53,8 +53,8 @@ def error_paths():
     # Token errato -> 401 gestito
     srv.BRIDGE_TOKEN = "sbagliato"
     d = srv.burp_status()
-    assert d["reachable"] is False and "Token" in d["error"], d
-    print("  [ok] token errato -> 401 gestito:", d["error"])
+    assert d["reachable"] is False and d.get("http_status") == 401, d
+    print("  [ok] token errato -> 401 gestito")
     srv.BRIDGE_TOKEN = TOKEN
 
     # Porta chiusa -> connessione rifiutata gestita
