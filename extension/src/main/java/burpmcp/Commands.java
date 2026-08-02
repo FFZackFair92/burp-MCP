@@ -496,11 +496,30 @@ final class Commands {
         String savedKey = api.persistence().extensionData().getString("collaborator_secret_key");
         if (savedKey != null) {
             try {
-                collabRef.set(api.collaborator().restoreClient(SecretKey.secretKey(savedKey)));
+                CollaboratorClient restored = api.collaborator().restoreClient(SecretKey.secretKey(savedKey));
+                if (restored != null) collabRef.set(restored);
+                else api.persistence().extensionData().deleteString("collaborator_secret_key");
             } catch (RuntimeException e) {
                 api.logging().logToError("collaborator: impossibile ripristinare la secret key salvata: " + e);
+                api.persistence().extensionData().deleteString("collaborator_secret_key");
             }
         }
+
+        // MontoyaApi.collaborator().createClient() puo' tornare null (o lanciare) se il
+        // server Collaborator e' disabilitato in Burp (Settings > Network > Burp Collaborator
+        // Server = "Don't use") o se manca connettivita' verso *.burpcollaborator.net.
+        // Centralizzato qui per dare un errore leggibile invece di una NPE col 500.
+        java.util.function.Supplier<Response> createClientOrError = () -> {
+            try {
+                CollaboratorClient c = api.collaborator().createClient();
+                if (c == null) return collabUnavailable(null);
+                collabRef.set(c);
+                api.persistence().extensionData().setString("collaborator_secret_key", c.getSecretKey().toString());
+                return null;
+            } catch (RuntimeException e) {
+                return collabUnavailable(String.valueOf(e));
+            }
+        };
 
         server.route("GET", "/collaborator/status", req -> {
             CollaboratorClient client = collabRef.get();
@@ -516,9 +535,9 @@ final class Commands {
 
             CollaboratorClient client = collabRef.get();
             if (client == null) {
-                client = api.collaborator().createClient();
-                collabRef.set(client);
-                api.persistence().extensionData().setString("collaborator_secret_key", client.getSecretKey().toString());
+                Response err = createClientOrError.get();
+                if (err != null) return err;
+                client = collabRef.get();
             }
 
             StringBuilder arr = new StringBuilder("[");
@@ -671,6 +690,15 @@ final class Commands {
 
     private static Response notFound(String msg) {
         return new Response(404, "{\"error\":" + BridgeServer.jsonStr(msg) + "}");
+    }
+
+    private static Response collabUnavailable(String detail) {
+        String hint = "Burp non ha creato un client Collaborator. Controlla in Burp: "
+                + "Settings > Network > Burp Collaborator Server (non deve essere su 'Don't use Burp Collaborator'), "
+                + "e la connettivita' di rete/DNS verso *.burpcollaborator.net (o il tuo server privato).";
+        return new Response(502, "{\"error\":\"collaborator_unavailable\""
+                + (detail != null ? ",\"detail\":" + BridgeServer.jsonStr(detail) : "")
+                + ",\"hint\":" + BridgeServer.jsonStr(hint) + "}");
     }
 
     private static int clampInt(String s, int min, int max, int def) {
