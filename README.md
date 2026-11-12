@@ -33,8 +33,9 @@ La **Fase 6** (novembre 2026) aggiunge quello che c'era nell'MCP ufficiale
 HTTP/2, regex sul contenuto della history, opzioni di progetto/utente, task
 execution engine, editor attivo, stringhe casuali.
 
-> ⚠️ Cambia il token di default `changeme` (stesso valore in estensione e server):
-> chiunque sulla macchina possa raggiungere la porta 9876 può pilotare Burp.
+> 🔑 Al primo avvio l'estensione genera un token casuale, lo salva nelle preferenze
+> di Burp e lo stampa nel tab **Output**: va copiato in `BURP_BRIDGE_TOKEN` del server.
+> Chi raggiunge la porta 9876 con quel token può pilotare Burp.
 
 
 
@@ -59,11 +60,14 @@ seleziona il `.jar`. Nel tab **Output** dovresti vedere:
 
 ```
 [Burp MCP Bridge] In ascolto su http://127.0.0.1:9876
-[Burp MCP Bridge] Token (X-Burp-Token): changeme
+[Burp MCP Bridge] Token (X-Burp-Token): 3f9c…  (64 caratteri, solo al primo avvio)
+[Burp MCP Bridge] Copialo in BURP_BRIDGE_TOKEN nella config del server MCP.
 ```
 
 Config opzionale (system property o variabile d'ambiente):
-`BURP_MCP_PORT` (default 9876), `BURP_MCP_TOKEN` (default `changeme`).
+`BURP_MCP_PORT` (default 9876), `BURP_MCP_TOKEN` (per scegliere tu il token; `changeme`
+viene ignorato), `BURP_MCP_SHOW_TOKEN=1` (ristampa per intero il token salvato: negli avvii
+successivi al primo compare mascherato).
 
 ## 2) Server MCP (Python)
 
@@ -78,7 +82,7 @@ Registralo in Claude Desktop → vedi `server/claude_desktop_config.example.json
 *"chiama burp_status"* → deve rispondere `reachable: true`.
 
 Variabili: `BURP_BRIDGE_URL` (default `http://127.0.0.1:9876`),
-`BURP_BRIDGE_TOKEN` (default `changeme`), `BURP_BRIDGE_TIMEOUT` (default 10).
+`BURP_BRIDGE_TOKEN` (obbligatorio), `BURP_BRIDGE_TIMEOUT` (default 30).
 
 > ⚠️ Usa lo stesso token nell'estensione e nel server MCP.
 
@@ -97,8 +101,12 @@ il protocollo MCP e la gestione degli errori senza avviare Burp.
 
 ## Sicurezza
 
-Il ponte ascolta **solo su 127.0.0.1** ed è protetto da token. Cambia il token
-di default (`changeme`) prima di un uso reale.
+Il ponte ascolta **solo su 127.0.0.1** ed è protetto da un token casuale di 256 bit,
+confrontato a tempo costante. Non esiste più un token di default.
+
+## Licenza
+
+[MIT](LICENSE)
 
 ## Comandi (tool MCP)
 
