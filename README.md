@@ -9,19 +9,34 @@ Claude Desktop  <--stdio-->  server MCP (Python/FastMCP)  <--HTTP loopback-->  e
                               server/burp_mcp_server.py                          extension/  (BridgeServer.java)
 ```
 
-## Stato: Fase 1 — il ponte ✅
+## Stato: Fasi 1–6 ✅ — 41 tool
 
-È implementata solo la **connessione**: l'estensione apre un server HTTP locale
-con l'endpoint `GET /ping`; il server MCP espone lo strumento `burp_status()` che
-lo interroga. I comandi veri (proxy history, sitemap, repeater, …) arrivano dopo.
+Tutto funziona anche con **Burp Community**. Ogni chiamata al ponte richiede
+l'header `X-Burp-Token: <token>`.
 
-Contratto del ponte:
+| Area | Tool |
+|---|---|
+| Ponte | `burp_status` |
+| Scope | `scope_check` · `scope_add` · `scope_remove` · `scope_bootstrap` |
+| Ricognizione | `proxy_history` (filtri host/stato/metodo, regex su URL e **sul contenuto**) · `sitemap` · `get_message` · `sitemap_add` · `sitemap_issues` |
+| Invio (scope-guard) | `http_send` (HTTP/1.1 o **HTTP/2** con `http_mode`) · `send_to_repeater` · `send_to_intruder` · `organizer_send` · `comparer_send` · `compare_responses` |
+| WebSocket | `websocket_history` · `get_ws_message` |
+| Utilità | `encode` · `decode` · `hash_text` · `random_string` |
+| Controllo app | `proxy_intercept` · `task_engine` (status/pause/resume) · `editor_get` · `editor_set` |
+| Configurazione Burp | `burp_options_get` (project/user, con password nascoste) · `burp_options_set` (serve `confirm=True`) |
+| Storage estensione | `project_info` · `config_get` · `config_set` · `config_delete` · `config_keys` |
+| Collaborator | `collaborator_status` · `collaborator_generate` · `collaborator_interactions` · `collaborator_reset` |
+| Dashboard/estensioni | `dashboard_event` · `extension_log` · `extension_info` · `organizer_list` |
 
-| Metodo | Path   | Auth (header)              | Risposta 200 |
-|--------|--------|----------------------------|--------------|
-| GET    | /ping  | `X-Burp-Token: <token>`    | `{"status":"ok","product":...,"version":...,"edition":...}` |
+La **Fase 6** (novembre 2026) aggiunge quello che c'era nell'MCP ufficiale
+[PortSwigger/mcp-server](https://github.com/PortSwigger/mcp-server) e mancava qui:
+HTTP/2, regex sul contenuto della history, opzioni di progetto/utente, task
+execution engine, editor attivo, stringhe casuali.
 
-Senza token valido → `401`.
+> ⚠️ Cambia il token di default `changeme` (stesso valore in estensione e server):
+> chiunque sulla macchina possa raggiungere la porta 9876 può pilotare Burp.
+
+
 
 ---
 
@@ -72,6 +87,7 @@ Variabili: `BURP_BRIDGE_URL` (default `http://127.0.0.1:9876`),
 ```bash
 cd server
 python test_bridge.py
+python test_fase2.py   # ... fino a test_fase6.py
 ```
 
 Usa `mock_burp.py` (che replica il contratto di `BridgeServer.java`) per validare
@@ -124,7 +140,7 @@ Fase 5 (Community — Collaborator, Dashboard, Extensions):
 - `extension_info()` — filename del jar e flag `is_bapp` della nostra estensione.
 
 Test locali: `python test_bridge.py`, `python test_fase2.py`, `python test_fase3.py`,
-`python test_fase4.py`, `python test_fase5.py`.
+`python test_fase4.py`, `python test_fase5.py`, `python test_fase6.py`.
 
 ## Copertura tab di Burp (screenshot barra strumenti)
 

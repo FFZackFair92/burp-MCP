@@ -8,6 +8,7 @@ import burp.api.montoya.collaborator.InteractionFilter;
 import burp.api.montoya.collaborator.SecretKey;
 import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.extension.Extension;
+import burp.api.montoya.http.HttpMode;
 import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
@@ -70,6 +71,8 @@ final class Commands {
             int limit = clampInt(req.q("limit", "100"), 1, 1000, 100);
             int offset = clampInt(req.q("offset", "0"), 0, Integer.MAX_VALUE, 0);
             Pattern rx = compileSafe(search);
+            // regex su richiesta+risposta complete (header e body), come get_proxy_http_history_regex di PortSwigger
+            Pattern contentRx = compileSafe(req.q("content", ""));
 
             List<ProxyHttpRequestResponse> hist = api.proxy().history();
             StringBuilder arr = new StringBuilder("[");
@@ -97,6 +100,8 @@ final class Commands {
                     if (api.scope().isInScope(url) != want) continue;
                 }
                 if (rx != null && !rx.matcher(url).find()) continue;
+                if (contentRx != null && !contentRx.matcher(rq.toString()).find()
+                        && (rs == null || !contentRx.matcher(rs.toString()).find())) continue;
 
                 matched++;
                 if (skipped < offset) {
@@ -201,6 +206,16 @@ final class Commands {
             boolean force = req.q("force", "false").equalsIgnoreCase("true");
             int max = clampInt(req.q("max", "8000"), 100, 2000000, 8000);
             String raw = req.body;
+            // mode: auto | http1 | http2 | http2_ignore_alpn (come send_http2_request di PortSwigger)
+            String modeQ = req.q("mode", "auto").toLowerCase().replace("-", "_");
+            HttpMode mode;
+            switch (modeQ) {
+                case "auto": mode = HttpMode.AUTO; break;
+                case "http1": case "http_1": mode = HttpMode.HTTP_1; break;
+                case "http2": case "http_2": mode = HttpMode.HTTP_2; break;
+                case "http2_ignore_alpn": case "http_2_ignore_alpn": mode = HttpMode.HTTP_2_IGNORE_ALPN; break;
+                default: return bad("mode deve essere auto, http1, http2 o http2_ignore_alpn");
+            }
 
             if (host.isEmpty() || port == 0) return bad("parametri 'host'/'port' mancanti");
             if (raw == null || raw.isEmpty()) return bad("corpo (raw request) mancante");
@@ -215,7 +230,7 @@ final class Commands {
             }
 
             long t0 = System.nanoTime();
-            HttpRequestResponse rr = api.http().sendRequest(request);
+            HttpRequestResponse rr = api.http().sendRequest(request, mode);
             long ms = (System.nanoTime() - t0) / 1000000L;
             HttpResponse rs = rr.response();
 
@@ -228,10 +243,12 @@ final class Commands {
 
             return new Response(200, "{"
                     + "\"url\":" + BridgeServer.jsonStr(url) + ","
+                    + "\"mode\":" + BridgeServer.jsonStr(String.valueOf(mode)) + ","
                     + "\"status\":" + status + ","
                     + "\"length\":" + length + ","
                     + "\"mime\":" + BridgeServer.jsonStr(mime) + ","
                     + "\"time_ms\":" + ms + ","
+                    + "\"mode\":" + BridgeServer.jsonStr(String.valueOf(mode)) + ","
                     + "\"truncated\":" + truncated + ","
                     + "\"response\":" + BridgeServer.jsonStr(resStr)
                     + "}");

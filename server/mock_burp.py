@@ -27,7 +27,10 @@ def _in_scope(host: str) -> bool:
 
 def make_handler(token: str):
     # stato in-memory condiviso tra le richieste (per i test Fase 4)
-    state = {"intercept": False}
+    state = {"intercept": False, "engine": "RUNNING",
+             "editor": "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n",
+             "project_options": {"project_options": {"target": {"scope": {"include": []}},
+                                                     "connections": {"upstream_proxy": {"password": "segreta"}}}}}
     storage = {"project": {}, "global": {}}
     organizer = []  # [{"id","status"}]
     collab = {"active": False, "server": "polling.burpcollaborator.net", "next_id": 1, "interactions": []}
@@ -87,6 +90,10 @@ def make_handler(token: str):
                 host = q.get("host", "").lower()
                 if host:
                     items = [it for it in items if host in it["host"].lower()]
+                content = q.get("content", "")
+                if content:  # nel mock il "contenuto" e' metodo + url
+                    import re as _re
+                    items = [it for it in items if _re.search(content, f"{it['method']} {it['url']}")]
                 return self._send(200, {"total_matched": len(items), "count": len(items),
                                         "offset": int(q.get("offset", "0")), "items": items})
             if path == "/message":
@@ -97,6 +104,16 @@ def make_handler(token: str):
                     "request": f"GET /item/{idx} HTTP/1.1\r\nHost: example.com\r\n\r\n",
                     "response": f"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nok-{idx}",
                 })
+
+            # ---- Fase 6 ----
+            if path == "/options/export":
+                scope = q.get("scope", "project")
+                opts = state["project_options"] if scope == "project" else {"user_options": {"display": {}}}
+                return self._send(200, {"scope": scope, "options": json.dumps(opts)})
+            if path == "/task-engine":
+                return self._send(200, {"state": state["engine"]})
+            if path == "/editor":
+                return self._send(200, {"editable": True, "text": state["editor"]})
 
             # ---- Fase 4 ----
             if path == "/proxy/intercept":
@@ -179,9 +196,13 @@ def make_handler(token: str):
                 if not force and not _in_scope(host):
                     return self._send(403, {"error": "out_of_scope", "url": url,
                                             "hint": "usa force=true per inviare comunque"})
+                mode = {"auto": "AUTO", "http1": "HTTP_1", "http2": "HTTP_2",
+                        "http2_ignore_alpn": "HTTP_2_IGNORE_ALPN"}.get(q.get("mode", "auto"))
+                if mode is None:
+                    return self._send(400, {"error": "mode deve essere auto, http1, http2 o http2_ignore_alpn"})
                 return self._send(200, {
                     "url": url, "status": 200, "length": len(body), "mime": "HTML",
-                    "time_ms": 1, "truncated": False,
+                    "time_ms": 1, "mode": mode, "truncated": False,
                     "response": "HTTP/1.1 200 OK\r\n\r\n[echo]\r\n" + body,
                 })
 
@@ -260,6 +281,20 @@ def make_handler(token: str):
                 return self._send(200, {"logged": True, "level": q.get("level", "info")})
             if path == "/extension/log":
                 return self._send(200, {"logged": True, "stream": q.get("stream", "output")})
+
+            # ---- Fase 6 ----
+            if path == "/options/import":
+                state["project_options"] = json.loads(body)
+                return self._send(200, {"applied": True, "scope": q.get("scope", "project")})
+            if path == "/task-engine":
+                st = {"running": "RUNNING", "paused": "PAUSED"}.get(q.get("state", ""))
+                if not st:
+                    return self._send(400, {"error": "state deve essere 'running' o 'paused'"})
+                state["engine"] = st
+                return self._send(200, {"state": st})
+            if path == "/editor":
+                state["editor"] = body
+                return self._send(200, {"set": True, "length": len(body)})
 
             return self._send(404, {"error": "not found"})
 

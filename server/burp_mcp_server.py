@@ -3,6 +3,7 @@ Server MCP (FastMCP) per Burp.
 
 Fase 1: ponte + burp_status().
 Fase 2: comandi da ethical hacker (scope, proxy history, sitemap, message, http send).
+Fase 6: opzioni Burp, task engine, editor attivo, HTTP/2, regex sul contenuto.
 Tutto compatibile con Burp Community. I comandi che INVIANO richieste hanno
 scope-guard di default (rifiutano URL fuori scope, override con force=True) e un
 rate-limit opzionale.
@@ -150,11 +151,14 @@ def scope_bootstrap(urls: list | str) -> dict:
 @mcp.tool
 def proxy_history(host: str | None = None, in_scope: bool | None = None,
                   status: int | None = None, method: str | None = None,
-                  search: str | None = None, limit: int = 100, offset: int = 0) -> dict:
+                  search: str | None = None, limit: int = 100, offset: int = 0,
+                  content_regex: str | None = None) -> dict:
     """Elenca lo storico del Proxy di Burp con filtri.
 
     host: sottostringa host; in_scope: solo in/out scope; status: codice esatto;
-    method: GET/POST/...; search: regex sull'URL; limit/offset: paginazione.
+    method: GET/POST/...; search: regex sull'URL; content_regex: regex su richiesta
+    e risposta complete (header + body, es. 'Authorization: Bearer|api_key=');
+    limit/offset: paginazione.
     Ogni voce ha un 'index' usabile con get_message(source='proxy', index=...).
     """
     return _api("GET", "/proxy/history", {
@@ -163,6 +167,7 @@ def proxy_history(host: str | None = None, in_scope: bool | None = None,
         "status": None if status is None else str(status),
         "method": method,
         "search": search,
+        "content": content_regex,
         "limit": str(limit),
         "offset": str(offset),
     })
@@ -268,12 +273,16 @@ def http_send(url: str | None = None, method: str = "GET",
               headers: dict | str | None = None, body: str = "",
               raw: str | None = None, host: str | None = None,
               port: int | None = None, secure: bool | None = None,
-              force: bool = False, max_chars: int = 8000) -> dict:
+              force: bool = False, max_chars: int = 8000,
+              http_mode: str = "auto") -> dict:
     """Invia una richiesta HTTP tramite Burp e ritorna la risposta.
 
     Due modalita':
       - amichevole: passa url (+ method, headers dict, body).
       - raw: passa raw (richiesta HTTP grezza) + host, port, secure.
+
+    http_mode: 'auto' (default) | 'http1' | 'http2' | 'http2_ignore_alpn'.
+    Con http2 Burp converte la richiesta e parla HTTP/2 col server.
 
     Scope-guard: se l'URL NON e' nello scope di Burp la richiesta e' rifiutata,
     a meno di force=True. Rispetta BURP_SEND_MIN_INTERVAL tra invii.
@@ -296,6 +305,7 @@ def http_send(url: str | None = None, method: str = "GET",
         "secure": str(bool(secure)).lower(),
         "force": str(bool(force)).lower(),
         "max": str(max_chars),
+        "mode": http_mode,
     }, body=raw)
 
 
@@ -668,6 +678,121 @@ def extension_info() -> dict:
     (nome file .jar, se e' un BApp). Montoya non espone un'API per enumerare o
     pilotare le ALTRE estensioni installate: per quello serve la UI."""
     return _api("GET", "/extension/info")
+
+
+# --------------------------------------------------------------------------- #
+#  Fase 6 — confronto con l'MCP ufficiale PortSwigger (PortSwigger/mcp-server)
+# --------------------------------------------------------------------------- #
+_SECRET_KEYS = re.compile(r"(password|passwd|secret|token|api[_-]?key|credential|private[_-]?key)", re.I)
+
+
+def _redact(obj):
+    """Nasconde i valori delle chiavi che sembrano credenziali (come filterConfigCredentials)."""
+    if isinstance(obj, dict):
+        return {k: ("***" if _SECRET_KEYS.search(k) and isinstance(v, (str, int)) and v != "" else _redact(v))
+                for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_redact(x) for x in obj]
+    return obj
+
+
+@mcp.tool
+def burp_options_get(scope: str = "project", paths: list | str | None = None,
+                     redact: bool = True) -> dict:
+    """Esporta la configurazione di Burp in JSON (lo schema che accetta burp_options_set).
+
+    scope: 'project' (proxy listener, scope, sessioni...) | 'user' (UI, rete, estensioni).
+    paths: opzionale, solo alcuni rami, es. ['proxy.request_listeners', 'target.scope'].
+    redact: nasconde password/token/chiavi trovate nella configurazione.
+    """
+    if isinstance(paths, list):
+        paths = ",".join(paths)
+    res = _api("GET", "/options/export", {"scope": scope, "paths": paths})
+    if "options" in res:
+        try:
+            opts = json.loads(res["options"])
+            res["options"] = _redact(opts) if redact else opts
+        except (TypeError, json.JSONDecodeError):
+            pass
+    return res
+
+
+@mcp.tool
+def burp_options_set(options: dict | str, scope: str = "project", confirm: bool = False) -> dict:
+    """Applica configurazione a Burp (merge con quella esistente).
+
+    options: JSON con radice 'project_options' (scope project) o 'user_options' (scope user);
+    esporta prima con burp_options_get per vedere lo schema.
+    Modifica la configurazione di Burp: serve confirm=True.
+    """
+    if isinstance(options, str):
+        try:
+            options = json.loads(options)
+        except json.JSONDecodeError as e:
+            return {"error": f"options non e' un JSON valido: {e}"}
+    root = "user_options" if scope == "user" else "project_options"
+    if not isinstance(options, dict) or root not in options:
+        return {"error": f"il JSON deve avere la radice '{root}' per scope={scope}"}
+    if not confirm:
+        return {"confirm_required": True,
+                "message": f"Questo cambia la configurazione {scope} di Burp. Richiama con confirm=True.",
+                "keys": sorted(options[root])}
+    return _api("POST", "/options/import", {"scope": scope}, body=json.dumps(options))
+
+
+@mcp.tool
+def task_engine(action: str = "status") -> dict:
+    """Stato del task execution engine di Burp (scansioni, crawl, task in coda).
+
+    action: 'status' (default) | 'pause' | 'resume'.
+    """
+    action = (action or "status").lower()
+    if action == "status":
+        return _api("GET", "/task-engine")
+    if action in ("pause", "paused"):
+        return _api("POST", "/task-engine", {"state": "paused"})
+    if action in ("resume", "running", "run"):
+        return _api("POST", "/task-engine", {"state": "running"})
+    return {"error": "action deve essere 'status', 'pause' o 'resume'"}
+
+
+@mcp.tool
+def editor_get() -> dict:
+    """Legge il testo dell'editor di messaggi attivo in Burp (quello dove c'e' il cursore:
+    Repeater, Proxy, Intruder...). Utile per lavorare sulla richiesta che hai davanti."""
+    return _api("GET", "/editor")
+
+
+@mcp.tool
+def editor_set(text: str) -> dict:
+    """Sostituisce il testo dell'editor di messaggi attivo in Burp (es. la richiesta in
+    Repeater). Fallisce se l'editor col focus e' in sola lettura."""
+    return _api("POST", "/editor", body=text)
+
+
+@mcp.tool
+def random_string(length: int = 16, charset: str = "alnum") -> dict:
+    """Stringa casuale crittograficamente sicura (per payload, nonce, parametri unici).
+
+    charset: 'alnum' | 'alpha' | 'digits' | 'hex' | 'lower' | 'upper' | 'urlsafe'
+             oppure una stringa con i caratteri da usare.
+    """
+    import secrets
+    import string
+    sets = {
+        "alnum": string.ascii_letters + string.digits,
+        "alpha": string.ascii_letters,
+        "digits": string.digits,
+        "hex": "0123456789abcdef",
+        "lower": string.ascii_lowercase,
+        "upper": string.ascii_uppercase,
+        "urlsafe": string.ascii_letters + string.digits + "-_",
+    }
+    chars = sets.get(charset, charset)
+    if not chars:
+        return {"error": "charset vuoto"}
+    length = max(1, min(int(length), 100000))
+    return {"value": "".join(secrets.choice(chars) for _ in range(length)), "length": length}
 
 
 if __name__ == "__main__":
