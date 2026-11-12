@@ -10,7 +10,7 @@ rate-limit opzionale.
 
 Config (variabili d'ambiente):
   BURP_BRIDGE_URL          URL del ponte            (default http://127.0.0.1:9876)
-  BURP_BRIDGE_TOKEN        token condiviso          (default "changeme")
+  BURP_BRIDGE_TOKEN        token condiviso          (obbligatorio: lo stampa l'estensione nel tab Output)
   BURP_BRIDGE_TIMEOUT      timeout secondi          (default 30)
   BURP_SEND_MIN_INTERVAL   ritardo minimo tra invii (default 0 = disattivo)
 """
@@ -30,7 +30,7 @@ import httpx
 from fastmcp import FastMCP
 
 BRIDGE_URL = os.environ.get("BURP_BRIDGE_URL", "http://127.0.0.1:9876").rstrip("/")
-BRIDGE_TOKEN = os.environ.get("BURP_BRIDGE_TOKEN", "changeme")
+BRIDGE_TOKEN = os.environ.get("BURP_BRIDGE_TOKEN", "").strip()
 TIMEOUT = float(os.environ.get("BURP_BRIDGE_TIMEOUT", "30"))
 MIN_INTERVAL = float(os.environ.get("BURP_SEND_MIN_INTERVAL", "0"))
 
@@ -51,6 +51,9 @@ def _client() -> httpx.Client:
 def _api(method: str, path: str, params: dict | None = None, body: str | None = None) -> dict:
     """Chiama il ponte e ritorna sempre un dict (errori inclusi, leggibili)."""
     clean = {k: v for k, v in (params or {}).items() if v is not None and v != ""}
+    if not BRIDGE_TOKEN:
+        return {"error": "BURP_BRIDGE_TOKEN non impostato: copia il token che l'estensione "
+                         "stampa nel tab Output di Burp nella config del server MCP."}
     try:
         with _client() as client:
             resp = client.request(
@@ -70,6 +73,8 @@ def _api(method: str, path: str, params: dict | None = None, body: str | None = 
             j = {}
         if not isinstance(j, dict):
             j = {"detail": j}
+        if exc.response.status_code == 401:
+            j["hint"] = "Token rifiutato: BURP_BRIDGE_TOKEN deve essere uguale a quello dell'estensione."
         j.setdefault("error", f"HTTP {exc.response.status_code}")
         j["http_status"] = exc.response.status_code
         return j

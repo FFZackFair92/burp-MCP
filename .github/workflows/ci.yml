@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  server:
+    name: Server MCP (test con il finto Burp)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Test
+        run: |
+          for t in test_bridge.py test_fase2.py test_fase3.py test_fase4.py test_fase5.py test_fase6.py; do
+            echo "::group::$t"; python "$t"; echo "::endgroup::"
+          done
+
+  extension:
+    name: Estensione Burp (compilazione)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: bash extension/build.sh

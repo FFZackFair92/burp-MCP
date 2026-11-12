@@ -198,7 +198,7 @@ public class BridgeServer {
             }
 
             // Auth
-            if (token == null || !token.equals(headers.get("x-burp-token"))) {
+            if (!tokenMatches(headers.get("x-burp-token"))) {
                 writeResponse(out, 401, "{\"error\":\"unauthorized\"}");
                 return;
             }
@@ -325,5 +325,13 @@ public class BridgeServer {
             }
         }
         return sb.append("\"").toString();
+    }
+
+    /** Confronto a tempo costante, cosi' i tempi di risposta non rivelano il token. */
+    private boolean tokenMatches(String given) {
+        if (token == null || given == null) return false;
+        return java.security.MessageDigest.isEqual(
+                token.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                given.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 }
